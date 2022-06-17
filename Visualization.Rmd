@@ -1,0 +1,119 @@
+---
+title: "Visualization"
+author: "Shixue Mai"
+date: "4/28/2022"
+output: html_document
+---
+
+```{r}
+library(gdata)
+library(ggplot2)
+library(tidyverse)
+library(dplyr)
+library(ggthemes)
+library(here)
+library(ggforce)
+library(jkmisc)
+library(patchwork)
+library(viridisLite)
+library(colorspace)
+library(ggtext)
+```
+Read Datasets
+```{r}
+exp=read.xls('expeditions.xls',sheet=1,verbose=FALSE)
+mem=read.xls('members.xls',sheet=1,verbose=FALSE)
+peak=read.xls('peaks.xls',sheet=1,verbose=FALSE)
+```
+
+Which country have most customers?
+```{r}
+customers<-mem%>%
+  filter(status=='Climber' & deputy==FALSE & leader==FALSE & tibetan==FALSE & msolo== FALSE)%>%
+  group_by(citizen)%>%
+  summarise(count=n())%>%
+  arrange(desc(count))
+
+ggplot(customers[1:20,],aes(x=fct_reorder(citizen,count),y=count))+
+  geom_col()+
+  coord_flip()+
+  ggtitle("Nations with most customers") +
+  xlab('Citizenship')+
+  ylab("Number of customers")+
+  theme_hc()
+
+ggsave("Customers_citizenship.png")
+```
+```{r}
+head(mem)
+```
+
+Top 20 peaks among customers
+```{r}
+peaks<-mem%>%
+  filter(status=='Climber' & deputy==FALSE & leader==FALSE & tibetan==FALSE & msolo== FALSE)%>%
+  group_by(peakid)%>%
+  summarise(count=n())%>%
+  arrange(desc(count))
+
+ggplot(peaks[1:20,],aes(x=fct_reorder(peakid,count),y=count))+
+  geom_col()+
+  coord_flip()+
+  ggtitle("Popular peaks") +
+  xlab('Peakid')+
+  ylab("Number of customers")+
+  theme_hc()
+
+ggsave("Peak_customer.png")
+```
+
+Age distribution change along the year
+```{r}
+age_distribution<-mem%>%
+  filter(status=='Climber' & deputy==FALSE & leader==FALSE & tibetan==FALSE & msolo== FALSE)%>%
+  filter(citizen=='Japan' | citizen=='USA' | citizen=='UK' | citizen=='France' | citizen=='Spain')%>%
+  select(myear,calcage)%>%
+  filter(calcage!=0)%>%
+  group_by(myear,calcage)%>%
+  summarise(count=n())%>%
+  ggplot(aes(myear, calcage, fill= count)) + 
+    geom_tile() +
+    theme(legend.position="none")+
+    ggtitle("Age distribution over time") +
+    xlab('Year')+
+    ylab("Age Distribution")+
+    theme_hc()
+
+ggsave("age_distribution.png")
+```
+
+Age distribution among different peaks
+```{r}
+age_peak<-mem%>%
+  filter(status=='Climber' & deputy==FALSE & leader==FALSE & tibetan==FALSE & msolo== FALSE)%>%
+  filter(citizen=='Japan' | citizen=='USA' | citizen=='UK' | citizen=='France' | citizen=='Spain')%>%
+  filter(peakid=='EVER' | peakid=='CHOY' | peakid=='AMAD' | peakid=='MANA' | peakid=='DHA1')%>%
+  filter(calcage!=0)%>%
+  select(peakid,calcage)
+
+
+ggplot(data=age_peak,aes(x=peakid,y=calcage))+
+  geom_violin()+
+  ggtitle("Age distribution of top5 peaks") +
+  xlab('Peak')+
+  ylab("Age Distribution")+
+  theme_hc()
+
+ggsave("age_peaks.png")
+```
+
+
+
+
+
+
+
+
+
+
+

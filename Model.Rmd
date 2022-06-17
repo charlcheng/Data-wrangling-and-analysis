@@ -1,0 +1,322 @@
+---
+title: "HIMALAYAN"
+author: "Jingwen Cai, Yuping Liao, Zhenyu Cheng, Shixue Mai"
+date: "2/28/2022"
+output: html_document
+---
+
+Load Packages
+```{r}
+library(gdata)
+library(ggplot2)
+library(tidyverse)
+library(dplyr)
+library(ggthemes)
+library(caret)
+library(glmnet)
+library(gbm)
+library(h2o)
+library(Metrics)
+```
+
+Read Datasets
+```{r}
+data1=read.xls('expeditions.xls',sheet=1,verbose=FALSE)
+data2=read.xls('members.xls',sheet=1,verbose=FALSE)
+data3=read.xls('peaks.xls',sheet=1,verbose=FALSE)
+```
+
+Generate dataset for modeling
+```{r}
+expeditions_subset<-c('expid','year','season','route1','nation','leaders','sponsor','success1','claimed','disputed','smtdate','smtdays','termreason','highpoint','camps','rope','totmembers','smtmembers','mdeaths','tothired','smthired','hdeaths','o2used','o2climb','o2descent','o2sleep','o2medical','comrte','stdrte')
+expeditions<-data1[expeditions_subset]
+
+members<-data2%>%
+  group_by(expid)%>%
+  summarise(sex_ratio=mean(sex=='M'),average_age=mean(calcage),median_age=median(calcage),leader_ratio=mean(leader),deputy_ratio=mean(deputy),staff_ratio=mean(hired),sherpa_ratio=mean(sherpa),tibetan_ratio=mean(tibetan),success_ratio=mean(msuccess),speed=mean(mspeed),o2used_ratio=mean(mo2used),o2climb_ratio=mean(mo2climb),o2decent_ratio=mean(mo2descent),o2sleep_ratio=mean(mo2sleep),o2medical_ratio=mean(mo2medical),death_ratio=mean(death))
+
+himalayan <- expeditions %>%
+  right_join(members, by = 'expid')
+```
+
+Binning sponsor, nation, route, leader based on experience
+```{r}
+sponsor_group <- himalayan %>%
+  group_by(sponsor) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count)) %>%
+  mutate(index = row_number()) %>%
+  mutate(sponser_pop_group = case_when(index == 1 ~ 1,
+                           index > 1 & index < 6 ~ 2,
+                           index > 5 & index < 40 ~ 3,
+                           index > 39 & index < 185 ~ 4,
+                           index > 184 & index < 662~ 5,
+                           index > 661 ~ 6)) %>%
+  mutate(sponser_pop_group = as.factor(sponser_pop_group)) %>%
+  select(sponsor, sponser_pop_group)
+
+leader_group <- himalayan %>%
+  group_by(leaders) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count)) %>%
+  mutate(index = row_number()) %>%
+  mutate(leader_pop_group = case_when(index < 4 ~ 1,
+                           index > 3 & index < 14 ~ 2,
+                           index > 13 & index < 30 ~ 3,
+                           index > 29 & index < 75 ~ 4,
+                           index > 74 & index < 312 ~ 5,
+                           index > 311 ~ 6)) %>%
+  mutate(leader_pop_group = as.factor(leader_pop_group)) %>%
+  select(leaders, leader_pop_group)
+
+nation_group <- himalayan %>%
+  group_by(nation) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count)) %>%
+  mutate(index = row_number()) %>%
+  mutate(nation_pop_group = case_when(index < 8 ~ 1,
+                           count >= 8 & index <14  ~ 2,
+                           index >= 14 & index < 22 ~ 3,
+                           index >21 ~ 4))%>%
+  mutate(nation_pop_group = as.factor(nation_pop_group)) %>%
+  select(nation, nation_pop_group)
+
+route_group <- himalayan %>%
+  group_by(route1) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count)) %>%
+  mutate(index = row_number()) %>%
+  mutate(route_pop_group = case_when(index < 6 ~ 1,
+                           index > 5 & index < 17 ~ 2,
+                           index > 16 & index < 50 ~ 3,
+                           index > 49 & index < 100 ~ 4,
+                           index >99 ~ 5)) %>%
+  mutate(route_pop_group = as.factor(route_pop_group)) %>%
+  select(route1,route_pop_group)
+```
+
+```{r}
+model_data <- himalayan %>%
+  left_join(leader_group, by = "leaders") %>% 
+  left_join(sponsor_group, by = "sponsor") %>%
+  left_join(route_group, by = "route1")%>%
+  left_join(nation_group,by='nation')
+```
+
+```{r}
+redundant_variables<-c('expid','smtdate','route1',"nation",'leaders','sponsor','claimed','disputed','termreason')
+dependent_variables<-c('mdeaths','hdeaths','success_ratio','death_ratio')
+model_data_ana <- model_data %>%
+  select(-redundant_variables, -dependent_variables) 
+
+for(i in 1:ncol(model_data_ana)){
+  if(is.logical(model_data_ana[,i])){
+    model_data_ana[,i] = as.numeric(model_data_ana[,i])
+  }
+}
+```
+
+Feature Selection for success
+```{r lasso regression success}
+model_data_success <- model_data_ana %>%
+  select(-highpoint)
+
+
+set.seed(5201314)
+split = createDataPartition(y=model_data_success$success1,p = 0.8,list = F,groups = 100)
+train_model_success = model_data_success[split,]
+test_model_success = model_data_success[-split,]
+
+
+x = model.matrix(success1~.-1,data=train_model_success)
+y = train_model_success$success1
+set.seed(617)
+cv_lasso = cv.glmnet(x = x, 
+                     y = y, 
+                     alpha = 1,
+                     type.measure = 'mse')
+
+plot(cv_lasso)
+coef(cv_lasso, s = cv_lasso$lambda.1se) %>%
+  round(4)
+```
+
+
+```{r logisitc regression}
+model1_success <- glm(success1 ~., data = train_model_success)
+pred_model1_successs <- predict(model1_success, newdata = test_model_success, type = "response")
+ct = table(success = test_model_success$success1, predictions = as.integer(pred_model1_successs>0.9))
+accuracy_glm = sum(ct[1,1],ct[2,2])/nrow(test_model_success); accuracy_glm
+specificity_glm = ct[1,1]/sum(ct[1,1],ct[1,2]); specificity_glm
+sensitivity_glm = ct[2,2]/sum(ct[2,1],ct[2,2]); sensitivity_glm
+```
+
+```{r gbm succees}
+boost = gbm(success1~.,
+            data=train_model_success,
+            distribution="bernoulli",
+            n.trees = 500,
+            interaction.depth = 3,
+            shrinkage = 0.01) 
+
+pred_model2_success = predict(boost,n.trees = 500, newdata = test_model_success, type = "response")
+ct = table(success = test_model_success$success1, predictions = as.integer(pred_model2_success>0.9))
+accuracy_gbm = sum(ct[1,1],ct[2,2])/nrow(test_model_success); accuracy_gbm
+specificity_gbm = ct[1,1]/sum(ct[1,1],ct[1,2]); specificity_gbm
+sensitivity_gbm = ct[2,2]/sum(ct[2,1],ct[2,2]); sensitivity_gbm
+```
+
+```{r Neural Network GBM success}
+##H2o requires categorical response variable
+h2o.init()
+train_model_success_h20 <- train_model_success %>%
+  mutate(success1 = as.factor(success1)) %>%
+  mutate(leader_pop_group = as.numeric(leader_pop_group),
+         nation_pop_group = as.numeric(nation_pop_group),
+         sponser_pop_group = as.numeric(sponser_pop_group),
+         route_pop_group = as.numeric(route_pop_group))
+test_model_success_h20 <- test_model_success %>%
+  mutate(leader_pop_group = as.numeric(leader_pop_group),
+         nation_pop_group = as.numeric(nation_pop_group),
+         sponser_pop_group = as.numeric(sponser_pop_group),
+         route_pop_group = as.numeric(route_pop_group))
+
+
+
+
+train_h2o_model3_success <- as.h2o(train_model_success_h20)
+test_h2o_model3_success <- as.h2o(test_model_success_h20)
+model_h2o <- h2o.gbm(y = "success1",
+                     max_depth = 3,
+                     learn_rate = 0.99,
+                     distribution = "bernoulli",
+                     training_frame = train_h2o_model3_success)
+perf_h20_model_success <- h2o.performance(model_h2o, newdata = test_h2o_model3_success)
+predh2o <- h2o.predict(model_h2o,test_h2o_model3_success)
+ct = table(success = test_model_success$success1, predictions = as.integer(as.data.frame(predh2o)$p1>0.9))
+accuracy_nn = sum(ct[1,1],ct[2,2])/nrow(test_model_success); accuracy_nn
+specificity_nn = ct[1,1]/sum(ct[1,1],ct[1,2]); specificity_nn
+sensitivity_nn = ct[2,2]/sum(ct[2,1],ct[2,2]); sensitivity_nn
+```
+
+Model comparison for success
+```{r}
+tibble(accuracy_measure = c("accuracy","specificity","sensitivity"),
+       General_Linear_model = c(accuracy_glm,specificity_glm,sensitivity_glm),
+       Gradient_Boost_Machine = c(accuracy_gbm,specificity_gbm,sensitivity_gbm),
+       Neural_networks = c(accuracy_nn,specificity_nn,sensitivity_nn))
+```
+
+Feature Selection for highpoint
+```{r lasso regression}
+model_data_highpoint <- model_data_ana %>%
+  select(-success1)
+
+set.seed(5201314)
+split = createDataPartition(y=model_data_highpoint$highpoint,p = 0.8,list = F,groups = 100)
+train_model_highpoint = model_data_highpoint[split,]
+test_model_highpoint = model_data_highpoint[-split,]
+
+x = model.matrix(highpoint~.,data=train_model_highpoint)
+y = train_model_highpoint$highpoint
+set.seed(5201314)
+cv_lasso = cv.glmnet(x = x, 
+                     y = y, 
+                     alpha = 1,
+                     type.measure = 'mse')
+
+plot(cv_lasso)
+coef(cv_lasso, s = cv_lasso$lambda.1se) %>%
+  round(4)
+```
+
+```{r linear regression}
+model1_highpoint <- lm(highpoint ~., data = train_model_highpoint)
+pred_model1_highpoint <- predict(model1_highpoint, newdata = test_model_highpoint)
+rmse_lm <- rmse(test_model_highpoint$highpoint, pred_model1_highpoint);rmse_lm
+```
+
+```{r gbm}
+boost = gbm(highpoint~.,
+            data=train_model_highpoint,
+            distribution="gaussian",
+            n.trees = 500,
+            interaction.depth = 5,
+            shrinkage = 0.01) 
+
+pred_model2_highpoint = predict(boost,n.trees = 500, newdata = test_model_highpoint)
+rmse_glm = rmse(test_model_highpoint$highpoint, pred_model2_highpoint);rmse_glm
+```
+
+```{r Neural Network GBM}
+##H2o requires categorical response variable
+train_model_highpoint_h20 <- train_model_highpoint %>%
+  mutate(leader_pop_group = as.numeric(leader_pop_group),
+         nation_pop_group = as.numeric(nation_pop_group),
+         sponser_pop_group = as.numeric(sponser_pop_group),
+         route_pop_group = as.numeric(route_pop_group))
+
+test_model_highpoint_h20 <- test_model_highpoint %>%
+  mutate(leader_pop_group = as.numeric(leader_pop_group),
+         nation_pop_group = as.numeric(nation_pop_group),
+         sponser_pop_group = as.numeric(sponser_pop_group),
+         route_pop_group = as.numeric(route_pop_group))
+
+
+train_h2o_model3_highpoint <- as.h2o(train_model_highpoint_h20)
+test_h2o_model3_highpoint <- as.h2o(test_model_highpoint_h20)
+model_h2o <- h2o.gbm(y = "highpoint",
+                     max_depth = 8,
+                     learn_rate = 0.1,
+                     distribution = "gaussian",
+                     training_frame = train_h2o_model3_highpoint)
+perf_h20_model_highpoint <- h2o.performance(model_h2o, newdata = test_h2o_model3_highpoint);perf_h20_model_highpoint
+rmse_nn<- h2o.rmse(perf_h20_model_highpoint);rmse_nn
+
+```
+
+Model comparison for highpoint
+```{r}
+tibble(Model = c("General_Linear_model","Gradient_Boost_Machine","Neural_networks"),
+       RMSE = c(rmse_lm, rmse_glm, rmse_nn))
+```
+
+Time Series
+```{r}
+market<-data1%>%
+  filter(peakid=='EVER' | peakid=='CHOY' | peakid=='AMAD' | peakid=='MANA' | peakid=='DHA1')%>%
+  filter(year!=2020)%>%
+  group_by(year)%>%
+  summarise(count=n())
+
+expedition_market<-ts(market$count,start=1950,end = 2018,frequency = 1)
+```
+```{r}
+train = window(expedition_market,end=c(2006))
+test = window(expedition_market, start=c(2007))
+length(test)
+```
+```{r}
+ets_auto = ets(train)
+ets_auto_forecast = forecast(ets_auto,h=19)
+ses_model = ses(train,h = 19)
+
+autoplot(train)+
+  autolayer(ses_model,series = "Simple Exponential Smoothing",PI = F, size=1.1)+
+  autolayer(ets_auto_forecast,series="ETS - MAM (auto)",PI=F)+
+  autolayer(test)+
+  ggtitle('Market size prediction')
+  theme_hc()
+
+ggsave('time_series.png')
+```
+
+
+
+
+
+
+
+
+
+
